@@ -35,7 +35,11 @@ from tvm.relay.op.contrib import tensorrt
 def skip_codegen_test():
     """Skip test if TensorRT and CUDA codegen are not present"""
     if not tvm.runtime.enabled("cuda") or not tvm.gpu(0).exist:
-        print("Skip because CUDA is not enabled.")
+        print(
+            "Skip because CUDA is not enabled. gpu {} and cuda {}".format(
+                tvm.runtime.enabled("cuda"), tvm.gpu(0).exist
+            )
+        )
         return True
     if not tvm.get_global_func("relay.ext.tensorrt", True):
         print("Skip because TensorRT codegen is not available.")
@@ -45,7 +49,11 @@ def skip_codegen_test():
 
 def skip_runtime_test():
     if not tvm.runtime.enabled("cuda") or not tvm.gpu(0).exist:
-        print("Skip because CUDA is not enabled.")
+        print(
+            "Skip because CUDA is not enabled. gpu {} and cuda {}".format(
+                tvm.runtime.enabled("cuda"), tvm.gpu(0).exist
+            )
+        )
         return True
     if not tensorrt.is_tensorrt_runtime_enabled():
         print("Skip because TensorRT runtime is not available.")
@@ -70,7 +78,7 @@ def assert_result_dict_holds(result_dict):
             tvm.testing.assert_allclose(r1, r2, rtol=1e-3, atol=1e-3)
 
 
-def run_and_verify_func(config, target="cuda"):
+def run_and_verify_func(config, target="llvm"):
     """Test a Relay func by compiling, running, and comparing TVM and TRT outputs.
 
     Parameters
@@ -83,6 +91,7 @@ def run_and_verify_func(config, target="cuda"):
         return
     f, input_shapes, is_param = config
     params = {x: np.random.uniform(-1, 1, input_shapes[x]).astype(np.float32) for x in is_param}
+
     input_dict = {
         k: np.random.uniform(-1, 1, v).astype(np.float32)
         for k, v in input_shapes.items()
@@ -92,12 +101,14 @@ def run_and_verify_func(config, target="cuda"):
 
     result_dict = dict()
     for mode in ["graph", "vm"]:
-        for use_trt in [False, True]:
+        for use_trt in [True]:
             mod = tvm.IRModule()
             mod["main"] = f
+            mod = relay.transform.InferType()(mod)
             result_key = mode + ("_trt" if use_trt else "")
             if use_trt:
                 mod, config = tensorrt.partition_for_tensorrt(mod, params)
+                # print(mod)
                 with tvm.transform.PassContext(
                     opt_level=3, config={"relay.ext.tensorrt.options": config}
                 ):
@@ -386,6 +397,110 @@ def test_conv2d():
         get_graph((1, 3, 16, 16), (3, 8, 7, 7), 3, [2, 2, 3, 3], [2, 2], [1, 1], 24)
     )
     run_and_verify_func(get_graph((1, 3, 16, 16), (1, 3, 1, 1), channels=1))
+
+
+def test_qnn_conv2d():
+    def get_graph(
+        x_shape=(1, 32, 8, 8),
+        k_shape=(16, 32, 3, 3),
+        groups=1,
+        padding=(0, 0),
+        strides=(1, 1),
+        dilation=(1, 1),
+        channels=None,
+    ):
+        # x = relay.var("x", shape=(x_shape), dtype="float32")
+        # kernel = relay.var("kernel", shape=(k_shape), dtype="float32")
+
+        # Right -->
+        # data (fp32)          kernel (fp32)
+        #    |                         |
+        #    \                         /
+        #     \                      /
+        #       \                  /
+        #           conv2d (fp32)
+        #             |
+        #             |
+
+        # What we want --.>
+
+        # data(fp32)           kernel (fp32)
+        #   |                      |
+        #   |                      |
+        #   |                      |
+        # qnn.quantize()       qnn.quantize()
+        #   |(int8)                | (int8)
+        #   |                      |
+        #   |                      |
+        #    \                    /
+        #     \                 /
+        #       \             /
+        #         qnn.conv2d (int32)
+        #             |
+        #             |
+        #       qnn.requantize (int8)
+        #             |
+        #             |
+
+        x = relay.var("x", shape=(x_shape), dtype="float32")
+        kernel = relay.var("kernel", shape=(k_shape), dtype="float32")
+
+        #  F = scale * (q - zp)
+        q_x = relay.qnn.op.quantize(
+            x,
+            output_scale=relay.const(0.5, "float32"),
+            output_zero_point=relay.const(0, "int32"),
+            out_dtype="int8",
+        )
+        # q_kernel = relay.qnn.op.quantize(kernel,
+        #                                  output_scale=relay.const(0.25, "float32"),
+        #                                  output_zero_point=relay.const(0, "int32"),
+        #                                  out_dtype="int8")
+
+        q_kernel = relay.divide(kernel, relay.const(0.25, "float32"))
+
+        q_kernel = relay.cast(q_kernel, dtype="int8")
+        q_conv2d = relay.qnn.op.conv2d(
+            q_x,
+            q_kernel,
+            input_zero_point=relay.const(0, "int32"),
+            kernel_zero_point=relay.const(0, "int32"),
+            input_scale=relay.const(0.5, "float32"),
+            kernel_scale=relay.const(0.25, "float32"),
+            kernel_size=(3, 3),
+            channels=16,
+            out_dtype="int32",
+        )
+
+        out = relay.qnn.op.requantize(
+            q_conv2d,
+            input_scale=relay.const(0.5 * 0.25, "float32"),
+            input_zero_point=relay.const(0, "int32"),
+            output_scale=relay.const(0.125, "float32"),
+            output_zero_point=relay.const(0, "int32"),
+            out_dtype="int8",
+        )
+        f = relay.Function([x, kernel], out)
+        return f, {"x": x_shape, "kernel": k_shape}, ["kernel"]
+
+    for k_shape, groups in [((16, 32, 3, 3), 1)]:
+        for padding in [(0, 0)]:
+            for strides in [(1, 1)]:
+                for dilation in [(1, 1)]:
+                    run_and_verify_func(
+                        get_graph(
+                            k_shape=k_shape,
+                            groups=groups,
+                            padding=padding,
+                            strides=strides,
+                            dilation=dilation,
+                        ),
+                        target="cuda",
+                    )
+    # run_and_verify_func(
+    #     get_graph((1, 3, 16, 16), (3, 8, 7, 7), 3, [2, 2, 3, 3], [2, 2], [1, 1], 24)
+    # )
+    run_and_verify_func(get_graph((1, 3, 16, 16), (1, 3, 1, 1), channels=1), target="cuda")
 
 
 def test_conv2d_nhwc():

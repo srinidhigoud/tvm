@@ -18,8 +18,8 @@
 
 /*!
  * \file runtime/contrib/tensorrt/tensorrt_builder.cc
- * \brief The TensorRTBuilder class can be used to convert a JSONRuntime graph into a TRT engine
- * which can be used for inference.
+ * \brief The TensorRTBuilder class can be used to convert a JSONRuntime graph
+ * into a TRT engine which can be used for inference.
  */
 
 #include "tensorrt_builder.h"
@@ -39,7 +39,8 @@ namespace contrib {
 
 TensorRTBuilder::TensorRTBuilder(TensorRTLogger* logger,
                                  const std::vector<const DLTensor*>& data_entry,
-                                 size_t max_workspace_size, bool use_implicit_batch, bool use_fp16,
+                                 size_t max_workspace_size,
+                                 bool use_implicit_batch, bool use_fp16,
                                  int batch_size)
     : data_entry_(data_entry),
       max_workspace_size_(max_workspace_size),
@@ -50,8 +51,8 @@ TensorRTBuilder::TensorRTBuilder(TensorRTLogger* logger,
   builder_ = nvinfer1::createInferBuilder(*logger);
 #if TRT_VERSION_GE(6, 0, 1)
   // Use INetworkV2.
-  auto flags =
-      1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+  auto flags = 1U << static_cast<uint32_t>(
+                   nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
   if (use_implicit_batch_) {
     flags = 0U;
     builder_->setMaxBatchSize(batch_size_);
@@ -66,7 +67,8 @@ TensorRTBuilder::TensorRTBuilder(TensorRTLogger* logger,
 #endif
 }
 
-void TensorRTBuilder::AddInput(int nid, uint32_t entry_id, const JSONGraphNode& node) {
+void TensorRTBuilder::AddInput(int nid, uint32_t entry_id,
+                               const JSONGraphNode& node) {
   auto node_name = node.GetOpName();
   auto shapes = node.GetOpShape();
   auto dtypes = node.GetOpDataType();
@@ -80,8 +82,10 @@ void TensorRTBuilder::AddInput(int nid, uint32_t entry_id, const JSONGraphNode& 
       shape.erase(shape.begin());
     }
     nvinfer1::Dims dims = VectorToTrtDims(shape);
-    ICHECK(TypeMatch(dtypes[i], kDLFloat, 32)) << "Only FP32 inputs are supported.";
-    auto input_tensor = network_->addInput(name.c_str(), nvinfer1::DataType::kFLOAT, dims);
+    ICHECK(TypeMatch(dtypes[i], kDLFloat, 32))
+        << "Only FP32 inputs are supported.";
+    auto input_tensor =
+        network_->addInput(name.c_str(), nvinfer1::DataType::kFLOAT, dims);
     node_output_map_[nid].push_back(TensorRTOpInput(input_tensor));
     network_input_names_.push_back(name);
     entry_id_map_[name] = entry_id + i;
@@ -94,11 +98,13 @@ void TensorRTBuilder::AddConstant(int nid, const DLTensor* data) {
   node_output_map_[nid] = {TensorRTOpInput(weight, shape)};
 }
 
-void TensorRTBuilder::AddOutput(const JSONGraphNodeEntry& node, uint32_t entry_id) {
+void TensorRTBuilder::AddOutput(const JSONGraphNodeEntry& node,
+                                uint32_t entry_id) {
   auto it = node_output_map_.find(node.id_);
   ICHECK(it != node_output_map_.end()) << "Output was not found.";
   auto out_tensor = it->second[node.index_].tensor;
-  std::string name = "tensorrt_output_" + std::to_string(network_output_names_.size());
+  std::string name =
+      "tensorrt_output_" + std::to_string(network_output_names_.size());
   out_tensor->setName(name.c_str());
   network_->markOutput(*out_tensor);
   network_output_names_.push_back(name);
@@ -121,14 +127,17 @@ void TensorRTBuilder::AddLayer(int nid, const JSONGraphNode& node) {
     if (!converter->variable_input_count) {
       if (converter->input_types[i] == kTensor && input.type == kWeight) {
         input = TensorRTOpInput(GetInputAsTensor(input));
-      } else if (converter->input_types[i] == kWeight && input.type == kTensor) {
+      } else if (converter->input_types[i] == kWeight &&
+                 input.type == kTensor) {
         LOG(FATAL) << "Input " << i << " for " << params.op_name
                    << " requires weights but got a tensor.";
       }
     }
     params.inputs.push_back(input);
   }
-  ICHECK(converter->variable_input_count || converter->input_types.size() == params.inputs.size())
+
+  ICHECK(converter->variable_input_count ||
+         converter->input_types.size() == params.inputs.size())
       << "Op expected a different number of inputs.";
 
   // Convert op to TRT.
@@ -162,15 +171,18 @@ TensorRTEngineAndContext TensorRTBuilder::BuildEngine() {
     }
     config_->addOptimizationProfile(profile);
   }
-  nvinfer1::ICudaEngine* engine = builder_->buildEngineWithConfig(*network_, *config_);
+  nvinfer1::ICudaEngine* engine =
+      builder_->buildEngineWithConfig(*network_, *config_);
 #else
   nvinfer1::ICudaEngine* engine = builder_->buildCudaEngine(*network_);
 #endif
-  ICHECK_EQ(engine->getNbBindings(), network_input_names_.size() + network_output_names_.size());
+  ICHECK_EQ(engine->getNbBindings(),
+            network_input_names_.size() + network_output_names_.size());
   nvinfer1::IExecutionContext* context = engine->createExecutionContext();
   CleanUp();
 
-  // Allocate I/O buffers on GPU for TVM inputs which are on a different context.
+  // Allocate I/O buffers on GPU for TVM inputs which are on a different
+  // context.
   std::vector<runtime::NDArray> device_buffers(engine->getNbBindings());
   for (size_t i = 0; i < network_input_names_.size(); ++i) {
     AllocateDeviceBuffer(engine, network_input_names_[i], &device_buffers);
@@ -178,35 +190,43 @@ TensorRTEngineAndContext TensorRTBuilder::BuildEngine() {
   for (size_t i = 0; i < network_output_names_.size(); ++i) {
     AllocateDeviceBuffer(engine, network_output_names_[i], &device_buffers);
   }
-  return {engine, context, network_input_names_, network_output_names_, device_buffers};
+  return {engine, context, network_input_names_, network_output_names_,
+          device_buffers};
 }
 
-nvinfer1::Weights TensorRTBuilder::GetDLTensorAsWeights(const DLTensor* dptr,
-                                                        DLDeviceType src_device) {
+nvinfer1::Weights TensorRTBuilder::GetDLTensorAsWeights(
+    const DLTensor* dptr, DLDeviceType src_device) {
   ICHECK_EQ(dptr->ctx.device_type, src_device);
   ICHECK(static_cast<int>(dptr->dtype.code) == kDLFloat ||
          static_cast<int>(dptr->dtype.code) == kDLInt);
+
   const auto trt_dtype = static_cast<int>(dptr->dtype.code) == kDLFloat
                              ? nvinfer1::DataType::kFLOAT
-                             : nvinfer1::DataType::kINT32;
+                             : TypeMatch(dptr->dtype, kDLInt, 8)
+                                   ? nvinfer1::DataType::kINT8
+                                   : nvinfer1::DataType::kINT32;
   const size_t weight_bytes = GetDataSize(*dptr);
   nvinfer1::Weights weight{trt_dtype, nullptr, 0};
   size_t count = 1;
+  size_t byte_count = (dptr->dtype.bits * dptr->dtype.lanes + 7) / 8;
   for (tvm_index_t i = 0; i < dptr->ndim; ++i) {
     count *= dptr->shape[i];
   }
-  ICHECK_EQ(count * 4, weight_bytes);
+
+  ICHECK_EQ(count * byte_count, weight_bytes);
   weight.count = count;
-  weight.values = new float[count];
-  ICHECK_EQ(TVMArrayCopyToBytes(const_cast<DLTensor*>(dptr), const_cast<void*>(weight.values),
-                                weight_bytes),
+  weight.values = new uint8_t[weight_bytes];
+
+  ICHECK_EQ(TVMArrayCopyToBytes(const_cast<DLTensor*>(dptr),
+                                const_cast<void*>(weight.values), weight_bytes),
             0)
       << TVMGetLastError();
   trt_weights_.push_back(weight);
   return weight;
 }
 
-nvinfer1::ITensor* TensorRTBuilder::GetInputAsTensor(const TensorRTOpInput& input) {
+nvinfer1::ITensor* TensorRTBuilder::GetInputAsTensor(
+    const TensorRTOpInput& input) {
   if (input.type == kTensor) return input.tensor;
   auto shape = input.weight_shape;
   // Remove batch dim when not in explicit batch mode.
@@ -214,12 +234,13 @@ nvinfer1::ITensor* TensorRTBuilder::GetInputAsTensor(const TensorRTOpInput& inpu
   // x = Relay dims (1, 32, 224, 224) which becomes TRT Dims (32, 224, 224)
   // y = Relay dims (1, 32)
   // z = add(x, y)
-  // y needs to have TRT dims (32,), otherwise broadcasting will result in z having
-  // TRT Dims(1, 32, 224, 224) when it should be (32, 224, 224).
+  // y needs to have TRT dims (32,), otherwise broadcasting will result in z
+  // having TRT Dims(1, 32, 224, 224) when it should be (32, 224, 224).
   if (use_implicit_batch_ && shape.size() > 1 && shape[0] == 1) {
     shape.erase(shape.begin());
   }
-  return network_->addConstant(VectorToTrtDims(shape), input.weight)->getOutput(0);
+  return network_->addConstant(VectorToTrtDims(shape), input.weight)
+      ->getOutput(0);
 }
 
 void TensorRTBuilder::CleanUp() {
@@ -237,16 +258,18 @@ void TensorRTBuilder::CleanUp() {
   }
 }
 
-void TensorRTBuilder::AllocateDeviceBuffer(nvinfer1::ICudaEngine* engine, const std::string& name,
-                                           std::vector<runtime::NDArray>* device_buffers) {
+void TensorRTBuilder::AllocateDeviceBuffer(
+    nvinfer1::ICudaEngine* engine, const std::string& name,
+    std::vector<runtime::NDArray>* device_buffers) {
   const uint32_t entry_id = entry_id_map_[name];
   if (data_entry_[entry_id]->ctx.device_type != kDLGPU) {
     const int binding_index = engine->getBindingIndex(name.c_str());
     ICHECK_NE(binding_index, -1);
-    std::vector<int64_t> shape(data_entry_[entry_id]->shape,
-                               data_entry_[entry_id]->shape + data_entry_[entry_id]->ndim);
-    device_buffers->at(binding_index) =
-        runtime::NDArray::Empty(shape, data_entry_[entry_id]->dtype, {kDLGPU, 0});
+    std::vector<int64_t> shape(
+        data_entry_[entry_id]->shape,
+        data_entry_[entry_id]->shape + data_entry_[entry_id]->ndim);
+    device_buffers->at(binding_index) = runtime::NDArray::Empty(
+        shape, data_entry_[entry_id]->dtype, {kDLGPU, 0});
   }
 }
 

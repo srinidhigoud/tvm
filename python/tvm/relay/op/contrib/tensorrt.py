@@ -371,6 +371,24 @@ def softmax_annotate_fn(expr):  # pylint: disable=unused-variable
     return True
 
 
+@_register_external_dynamic_check_func("qnn.conv2d")
+def qnn_conv2d_annotate_fn(expr):  # pylint: disable=unused-variable
+    """Check if qnn.conv2d is supported by TensorRT."""
+    return True
+
+
+@_register_external_dynamic_check_func("qnn.requantize")
+def qnn_requantize_annotate_fn(expr):  # pylint: disable=unused-variable
+    """Check if qnn.requantize is supported by TensorRT."""
+    return True
+
+
+@_register_external_dynamic_check_func("qnn.quantize")
+def qnn_quantize_annotate_fn(expr):  # pylint: disable=unused-variable
+    """Check if qnn.quantize is supported by TensorRT."""
+    return True
+
+
 @_register_external_dynamic_check_func("nn.conv2d")
 def conv2d_annotate_fn(expr):  # pylint: disable=unused-variable
     """Check if nn.conv2d is supported by TensorRT."""
